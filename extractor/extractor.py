@@ -23,6 +23,7 @@ DEFAULT_INDIRS = ["."]
 DEFAULT_EXTS = ["py"]
 # 默认的注释前缀
 DEFAULT_COMMENT_CHARS = ("#", "//")
+DEFAULT_BLOCK_COMMENT_CHARS = (("'''", "'''"), ('"""', '"""'), ("/*", "*/"), ("<!--", "-->"))
 
 
 def del_slash(dirs):
@@ -125,6 +126,7 @@ class CodeWriter(object):
         space_after=2.3,
         line_spacing=10.5,
         command_chars=None,
+        block_comment_pairs=None,
         document=None,
     ):
         self.font_name = font_name
@@ -133,6 +135,7 @@ class CodeWriter(object):
         self.space_after = space_after
         self.line_spacing = line_spacing
         self.command_chars = command_chars if command_chars else DEFAULT_COMMENT_CHARS
+        self.block_comment_pairs = block_comment_pairs if block_comment_pairs else DEFAULT_BLOCK_COMMENT_CHARS
         self.document = (
             Document(pkg_resources.resource_filename("extractor", "template.docx"))
             if not document
@@ -155,6 +158,37 @@ class CodeWriter(object):
                 break
         return is_comment
 
+    def strip_inline_comment(self, line):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+
+        for i, char in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+
+            if char == "\\":
+                escaped = True
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                continue
+
+            if in_single_quote or in_double_quote:
+                continue
+
+            for comment_char in self.command_chars:
+                if line.startswith(comment_char, i):
+                    return line[:i].rstrip()
+
+        return line
+
     def write_header(self, title):
         """
         写入页眉
@@ -170,13 +204,54 @@ class CodeWriter(object):
         """
         把单个文件添加到程序文档里面
         """
+        in_block_comment = False
         with open(file, encoding="utf-8") as fp:
             for line in fp:
                 line = line.rstrip()
                 if self.is_blank_line(line):
                     continue
+
+                stripped_line = line.lstrip()
+
+                if in_block_comment:
+                    end_found = False
+                    for _, end_char in self.block_comment_pairs:
+                        if end_char in stripped_line:
+                            end_found = True
+                            break
+                    if end_found:
+                        in_block_comment = False
+                    continue
+
+                is_single_line_block_comment = False
+                block_start_found = False
+                for start_char, end_char in self.block_comment_pairs:
+                    if stripped_line.startswith(start_char):
+                        block_start_found = True
+                        if start_char != end_char or stripped_line.count(start_char) == 1:
+                            if end_char not in stripped_line[len(start_char):]:
+                                in_block_comment = True
+                        else:
+                            if stripped_line.count(start_char) == 1:
+                                in_block_comment = True
+                            else:
+                                is_single_line_block_comment = True
+                        if not in_block_comment:
+                            is_single_line_block_comment = True
+                        break
+
+                if block_start_found and is_single_line_block_comment:
+                    continue
+                if block_start_found and in_block_comment:
+                    continue
+
                 if self.is_comment_line(line):
                     continue
+
+                line = self.strip_inline_comment(line)
+                if self.is_blank_line(line):
+                    continue
+
                 paragraph = self.document.add_paragraph()
                 paragraph.paragraph_format.space_before = Pt(self.space_before)
                 paragraph.paragraph_format.space_after = Pt(self.space_after)
